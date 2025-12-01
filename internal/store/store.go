@@ -10,11 +10,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	fts "github.com/Victor3563/NoteLine/cli-notebook/internal/fulltext"
+	"github.com/Victor3563/NoteLine/cli-notebook/internal/i18n"
+
+	"github.com/Victor3563/NoteLine/cli-notebook/internal/lru"
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/model"
 )
 
@@ -28,6 +33,7 @@ const (
 )
 
 var ErrNotFound = errors.New("note not found")
+var noteCache *lru.LRU
 
 type manifest struct {
 	Version          int   `json:"version"`
@@ -37,10 +43,11 @@ type manifest struct {
 }
 
 type Store struct {
-	root     string
-	man      manifest
-	active   *os.File
-	activeNo int
+	root      string
+	man       manifest
+	active    *os.File
+	activeNo  int
+	cacheFile string
 }
 
 type Filter struct {
@@ -53,7 +60,7 @@ type Filter struct {
 func Ensure(root string) error {
 	if strings.TrimSpace(root) == "" {
 		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".noteline")
+		root = filepath.Join(home, ".data")
 	}
 	if err := os.MkdirAll(filepath.Join(root, dirSegments), 0o755); err != nil { // Права 0o755 (rwxr-xr-x)
 		return err
@@ -83,7 +90,7 @@ func Ensure(root string) error {
 func Open(root string) (*Store, error) {
 	if strings.TrimSpace(root) == "" {
 		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".noteline")
+		root = filepath.Join(home, ".data")
 	}
 	if err := Ensure(root); err != nil {
 		return nil, err
@@ -98,6 +105,14 @@ func Open(root string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{root: root, man: man}
+	noteCache = lru.New(4096)
+	s.cacheFile = filepath.Join(root, "lru_cache.json") // кеш-файл
+	s.loadCacheFromDisk()
+	if err := fts.Init(root); err != nil {
+		// not fatal: we still want store to work; just log warning to stderr
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("warning.fulltext_init_failed", err))
+	}
+
 	if err := s.openActiveSegmentRW(); err != nil {
 		return nil, err
 	}
@@ -105,10 +120,16 @@ func Open(root string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	var err1 error
+	s.saveCacheToDisk()
 	if s.active != nil {
-		return s.active.Close()
+		err1 = s.active.Close()
 	}
-	return nil
+	// close fulltext index (best-effort)
+	if err := fts.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("warning.fulltext_close_error", err))
+	}
+	return err1
 }
 
 func (s *Store) openActiveSegmentRW() error {
@@ -171,12 +192,38 @@ func (s *Store) Append(n *model.Note) error {
 		}
 	}
 	enc := json.NewEncoder(s.active)
-	return enc.Encode(n)
+	if err := enc.Encode(n); err != nil {
+		return err
+	}
+	if noteCache != nil {
+		if n.Deleted {
+			noteCache.Remove(n.ID)
+		} else {
+			noteCache.Add(n.ID, n)
+		}
+	}
+	// update fulltext index (best-effort: логируем и не откатываем Append)
+	if err := fts.IndexNote(n); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("warning.fulltext_index_update_failed", n.ID, err))
+	}
+	return nil
 }
 
 // GetByID делает линейный поиск по всем сегментам, начиная с последнего.
 func (s *Store) GetByID(id string) (*model.Note, error) {
 	segDir := filepath.Join(s.root, dirSegments)
+	if noteCache != nil {
+		if v, ok := noteCache.Get(id); ok {
+			if n, ok2 := v.(*model.Note); ok2 {
+				if !n.Deleted {
+					// log.Printf("lru cache got this")
+					return n, nil
+				}
+				return nil, ErrNotFound
+			}
+		}
+	}
+
 	files, _ := filepath.Glob(filepath.Join(segDir, "notes-*.ndjson"))
 	if len(files) == 0 {
 		return nil, ErrNotFound
@@ -195,9 +242,17 @@ func (s *Store) GetByID(id string) (*model.Note, error) {
 			var n model.Note
 			if err := json.Unmarshal(line, &n); err == nil {
 				if n.ID == id && !n.Deleted {
+					// cache found note
+					// log.Printf("lru cache analyze this")
+					if noteCache != nil {
+						// log.Printf("lru cache added this")
+						// store pointer to a heap-allocated copy (n is local; &n is ok as it's escaped)
+						noteCache.Add(n.ID, &n)
+					}
 					f.Close()
 					return &n, nil
 				}
+
 			}
 		}
 		f.Close()
@@ -205,11 +260,49 @@ func (s *Store) GetByID(id string) (*model.Note, error) {
 	return nil, ErrNotFound
 }
 
-// List возвращает заметки, отфильтрованные без индекса.
 func (s *Store) List(filter Filter) ([]model.Note, error) {
 	segDir := filepath.Join(s.root, dirSegments)
 	files, _ := filepath.Glob(filepath.Join(segDir, "notes-*.ndjson"))
 	sort.Sort(sort.Reverse(sort.StringSlice(files)))
+
+	// If Contains is set, try fulltext search first (fast).
+	if strings.TrimSpace(filter.Contains) != "" {
+		// try fulltext
+		ids, err := fts.Search(filter.Contains, filter.Limit)
+		// fmt.Fprintf(os.Stderr, "debug: fts.Search('%s') -> len(ids)=%d, err=%v\n", filter.Contains, len(ids), err)
+		if err == nil && len(ids) > 0 {
+			var out []model.Note
+			seen := make(map[string]bool)
+			for i, id := range ids {
+				if filter.Limit > 0 && i >= filter.Limit {
+					break
+				}
+				if seen[id] {
+					continue
+				}
+				n, err := s.GetByID(id)
+				if err != nil {
+					continue
+				}
+				if filter.Tag != "" {
+					found := slices.Contains(n.Tags, filter.Tag)
+					if !found {
+						continue
+					}
+				}
+				out = append(out, *n)
+				seen[id] = true
+			}
+			// sort by created desc
+			sort.SliceStable(out, func(i, j int) bool {
+				return out[i].CreatedAt.After(out[j].CreatedAt)
+			})
+			return out, nil
+		}
+		// else: fallthrough to full scan (index not available or returned nothing)
+	}
+
+	// --- existing scan fallback (unchanged) ---
 	var out []model.Note
 	seen := make(map[string]bool) // если в будущих версиях появятся обновления — брать последний
 	for _, path := range files {
@@ -263,4 +356,42 @@ func (s *Store) List(filter Filter) ([]model.Note, error) {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+func (s *Store) loadCacheFromDisk() {
+	f, err := os.Open(s.cacheFile)
+	if err != nil {
+		return // если файла нет — ничего страшного
+	}
+	defer f.Close()
+
+	var notes []model.Note
+	dec := json.NewDecoder(f)
+	if err := dec.Decode(&notes); err != nil {
+		return
+	}
+
+	for i := range notes {
+		n := notes[i]
+		if !n.Deleted {
+			noteCache.Add(n.ID, &n)
+		}
+	}
+}
+
+func (s *Store) saveCacheToDisk() {
+	if noteCache == nil {
+		return
+	}
+
+	var notes []model.Note
+	// сканируем все значения LRU
+	for _, e := range noteCache.All() {
+		if n, ok := e.(*model.Note); ok && !n.Deleted {
+			notes = append(notes, *n)
+		}
+	}
+
+	b, _ := json.MarshalIndent(notes, "", "  ")
+	_ = os.WriteFile(s.cacheFile, b, 0o644)
 }
