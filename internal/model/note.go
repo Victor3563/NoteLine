@@ -1,6 +1,3 @@
-// Просто структура заметки
-// после прочтения удалить
-
 package model
 
 import (
@@ -11,7 +8,7 @@ import (
 	"time"
 )
 
-// Note описывает запись-блокнот.
+// Note описывает одну заметку.
 type Note struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
@@ -23,14 +20,16 @@ type Note struct {
 }
 
 // NewNote создаёт новую заметку с устойчивым ID.
-// ID = sha1( timestamp_ns | random_8 | title_len | text_len )
+// ID = sha1(timestamp_ns | random_8 | len(title) | len(text))
 func NewNote(title, text string, tags []string) *Note {
 	now := time.Now().UTC()
 	var rnd [8]byte
 	_, _ = rand.Read(rnd[:])
+
 	raw := fmt.Sprintf("%d|%x|%d|%d", now.UnixNano(), rnd, len(title), len(text))
 	h := sha1.Sum([]byte(raw))
 	id := hex.EncodeToString(h[:])
+
 	return &Note{
 		ID:        id,
 		Title:     title,
@@ -38,5 +37,6 @@ func NewNote(title, text string, tags []string) *Note {
 		Tags:      tags,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Deleted:   false,
 	}
 }
