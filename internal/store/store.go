@@ -7,11 +7,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	fts "github.com/Victor3563/NoteLine/cli-notebook/internal/fulltext"
+	"github.com/Victor3563/NoteLine/cli-notebook/internal/i18n"
+	"github.com/Victor3563/NoteLine/cli-notebook/internal/lru"
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/model"
 )
 
@@ -25,6 +29,7 @@ const (
 )
 
 var ErrNotFound = errors.New("note not found")
+var noteCache *lru.LRU
 
 type manifest struct {
 	Version          int   `json:"version"`
@@ -34,10 +39,11 @@ type manifest struct {
 }
 
 type Store struct {
-	root     string
-	man      manifest
-	active   *os.File
-	activeNo int
+	root      string
+	man       manifest
+	active    *os.File
+	activeNo  int
+	cacheFile string
 }
 
 type Filter struct {
@@ -50,9 +56,10 @@ type Filter struct {
 func Ensure(root string) error {
 	if strings.TrimSpace(root) == "" {
 		home, _ := os.UserHomeDir()
+		// лучше быть согласованным с cli (по умолчанию ~/.noteline)
 		root = filepath.Join(home, ".noteline")
 	}
-	if err := os.MkdirAll(filepath.Join(root, dirSegments), 0o755); err != nil { // Права 0o755 (rwxr-xr-x)
+	if err := os.MkdirAll(filepath.Join(root, dirSegments), 0o755); err != nil {
 		return err
 	}
 
@@ -104,6 +111,16 @@ func Open(root string) (*Store, error) {
 		man:  man,
 	}
 
+	// init LRU + кеш на диск
+	noteCache = lru.New(4096)
+	s.cacheFile = filepath.Join(root, "lru_cache.json")
+	s.loadCacheFromDisk()
+
+	// init fulltext index (best-effort)
+	if err := fts.Init(root); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("warning.fulltext_init_failed", err))
+	}
+
 	if err := s.openActiveSegmentRW(); err != nil {
 		return nil, err
 	}
@@ -112,10 +129,20 @@ func Open(root string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	var err1 error
+
+	// сохраним кэш на диск
+	s.saveCacheToDisk()
+
 	if s.active != nil {
-		return s.active.Close()
+		err1 = s.active.Close()
 	}
-	return nil
+
+	// закрыть fulltext index (best-effort)
+	if err := fts.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("warning.fulltext_close_error", err))
+	}
+	return err1
 }
 
 func (s *Store) openActiveSegmentRW() error {
@@ -192,10 +219,10 @@ func (s *Store) Append(n *model.Note) error {
 	// ротация по size (учитываем \n)
 	if st, err := s.active.Stat(); err == nil {
 		if st.Size()+int64(len(b)+1) > int64(s.man.SegmentSizeBytes) {
-		if err := s.rotate(); err != nil {
-			return err
+			if err := s.rotate(); err != nil {
+				return err
+			}
 		}
-	}
 	}
 
 	if _, err := s.active.Write(b); err != nil {
@@ -204,6 +231,22 @@ func (s *Store) Append(n *model.Note) error {
 	if _, err := s.active.Write([]byte("\n")); err != nil {
 		return err
 	}
+
+	// обновляем LRU
+	if noteCache != nil {
+		if n.Deleted {
+			noteCache.Remove(n.ID)
+		} else {
+			noteCopy := *n
+			noteCache.Add(n.ID, &noteCopy)
+		}
+	}
+
+	// обновляем fulltext индекс (best-effort)
+	if err := fts.IndexNote(n); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("warning.fulltext_index_update_failed", n.ID, err))
+	}
+
 	return nil
 }
 
@@ -250,6 +293,18 @@ func (s *Store) loadAllNotes() (map[string]model.Note, error) {
 
 // GetByID возвращает последнюю версию заметки по ID.
 func (s *Store) GetByID(id string) (*model.Note, error) {
+	if noteCache != nil {
+		if v, ok := noteCache.Get(id); ok {
+			if n, ok2 := v.(*model.Note); ok2 {
+				if !n.Deleted {
+					nCopy := *n
+					return &nCopy, nil
+				}
+				return nil, ErrNotFound
+			}
+		}
+	}
+
 	notes, err := s.loadAllNotes()
 	if err != nil {
 		return nil, err
@@ -258,44 +313,87 @@ func (s *Store) GetByID(id string) (*model.Note, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
+
+	// положим в LRU
+	if noteCache != nil {
+		nCopy := n
+		noteCache.Add(id, &nCopy)
+	}
+
 	nCopy := n
 	return &nCopy, nil
 }
 
-// List возвращает заметки, отфильтрованные без постоянного индекса.
+// List возвращает заметки, отфильтрованные, с возможностью быстрого поиска через fulltext.
 func (s *Store) List(filter Filter) ([]model.Note, error) {
+	filter.Tag = strings.TrimSpace(filter.Tag)
+	filter.Contains = strings.TrimSpace(filter.Contains)
+
+	// Если задан Contains — сначала пробуем fulltext
+	if filter.Contains != "" {
+		ids, err := fts.Search(filter.Contains, filter.Limit)
+		if err == nil && len(ids) > 0 {
+			var out []model.Note
+			seen := make(map[string]bool)
+
+			for _, id := range ids {
+				if filter.Limit > 0 && len(out) >= filter.Limit {
+					break
+				}
+				if seen[id] {
+					continue
+				}
+				n, err := s.GetByID(id)
+				if err != nil {
+					continue
+				}
+				if filter.Tag != "" && !slices.Contains(n.Tags, filter.Tag) {
+					continue
+				}
+				out = append(out, *n)
+				seen[id] = true
+			}
+
+			// сортируем по CreatedAt убыванию
+			sort.SliceStable(out, func(i, j int) bool {
+				return out[i].CreatedAt.After(out[j].CreatedAt)
+			})
+			return out, nil
+		}
+		// если fulltext не сработал — падаем в полный обход
+	}
+
 	notes, err := s.loadAllNotes()
 	if err != nil {
 		return nil, err
 	}
 
 	var out []model.Note
-
 	for _, n := range notes {
 		// фильтр по тегу
-			if filter.Tag != "" {
-				found := false
-				for _, t := range n.Tags {
-					if t == filter.Tag {
-						found = true
-						break
-					}
-				}
-				if !found {
-					continue
+		if filter.Tag != "" {
+			found := false
+			for _, t := range n.Tags {
+				if t == filter.Tag {
+					found = true
+					break
 				}
 			}
+			if !found {
+				continue
+			}
+		}
 
 		// фильтр по подстроке (title + text)
-			if filter.Contains != "" {
+		if filter.Contains != "" {
 			hay := strings.ToLower(n.Title + " " + n.Text)
 			needle := strings.ToLower(filter.Contains)
 			if !strings.Contains(hay, needle) {
-					continue
-				}
+				continue
 			}
+		}
 
-			out = append(out, n)
+		out = append(out, n)
 	}
 
 	// сортируем: новые сверху (по времени создания)
@@ -308,4 +406,49 @@ func (s *Store) List(filter Filter) ([]model.Note, error) {
 	}
 
 	return out, nil
+}
+
+func (s *Store) loadCacheFromDisk() {
+	if noteCache == nil {
+		return
+	}
+
+	f, err := os.Open(s.cacheFile)
+	if err != nil {
+		return // если файла нет — ничего страшного
+	}
+	defer f.Close()
+
+	var notes []model.Note
+	dec := json.NewDecoder(f)
+	if err := dec.Decode(&notes); err != nil {
+		return
+	}
+
+	for i := range notes {
+		n := notes[i]
+		if !n.Deleted {
+			noteCopy := n
+			noteCache.Add(n.ID, &noteCopy)
+		}
+	}
+}
+
+func (s *Store) saveCacheToDisk() {
+	if noteCache == nil {
+		return
+	}
+
+	var notes []model.Note
+	for _, e := range noteCache.All() {
+		if n, ok := e.(*model.Note); ok && !n.Deleted {
+			notes = append(notes, *n)
+		}
+	}
+
+	b, err := json.MarshalIndent(notes, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(s.cacheFile, b, 0o644)
 }

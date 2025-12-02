@@ -9,35 +9,15 @@ import (
 
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/cli"
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/docs"
+	"github.com/Victor3563/NoteLine/cli-notebook/internal/i18n"
 )
 
-const helpText = `noteline — CLI-блокнот с сегментированным хранением.
-
-Использование:
-  noteline init [--root DIR]
-  noteline create [--root DIR] --title "..." --text "..." [--tags "a,b,c"]
-  noteline read [--root DIR] --id ID [--json]
-  noteline update [--root DIR] --id ID --title "..." --text "..." [--tags "a,b,c"]
-  noteline delete [--root DIR] --id ID
-  noteline list   [--root DIR] [--tag TAG] [--contains STR] [--limit N] [--json]
-  noteline search [--root DIR] [--tag TAG] [--contains STR] [--limit N] [--json]
-  noteline import [--root DIR] --dir PATH [--ext "md,markdown,txt"] [--dry-run] [--verbose]
-  noteline completion SHELL      # SHELL = bash|zsh|fish
-  noteline manual                # мини-мануал (RU)
-  noteline man                   # man-страница в формате roff (RU)
-  noteline --help | -h | help
-
-Примеры:
-  noteline init
-  noteline create --title "Идея" --text "Сделать CLI" --tags go,ideas
-  noteline list --tag go --limit 20
-  noteline search --contains "cli"
-  noteline import --dir ./notes
-  noteline completion bash > /etc/bash_completion.d/noteline
-  noteline man > noteline.1
-`
-
 func main() {
+	_ = i18n.InitFromEnv()
+
+	// help_text берём из i18n (а не из константы)
+	helpText := i18n.T("help_text")
+
 	if len(os.Args) < 2 {
 		fmt.Println(helpText)
 		os.Exit(0)
@@ -98,7 +78,7 @@ func main() {
 
 		id, err := cli.CmdCreate(*root, *title, body, tagsSlice)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "create:", err)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", i18n.T("cmd.create"), err)
 			os.Exit(1)
 		}
 		fmt.Println(id)
@@ -109,12 +89,14 @@ func main() {
 		id := fs.String("id", "", "ID заметки")
 		asJSON := fs.Bool("json", false, "Вывести заметку в JSON")
 		_ = fs.Parse(args)
+
 		if strings.TrimSpace(*id) == "" {
-			fmt.Fprintln(os.Stderr, "read: требуется --id")
+			fmt.Fprintln(os.Stderr, i18n.T("main.read_missing_id"))
 			os.Exit(2)
 		}
+
 		if err := cli.CmdRead(*root, *id, *asJSON); err != nil {
-			fmt.Fprintln(os.Stderr, "read:", err)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", i18n.T("cmd.read"), err)
 			os.Exit(1)
 		}
 
@@ -169,6 +151,7 @@ func main() {
 		root := fs.String("root", "", "Путь к каталогу данных (по умолчанию ~/.noteline)")
 		id := fs.String("id", "", "ID заметки")
 		_ = fs.Parse(args)
+
 		if strings.TrimSpace(*id) == "" {
 			fmt.Fprintln(os.Stderr, "delete: требуется --id")
 			os.Exit(2)
@@ -181,13 +164,14 @@ func main() {
 	case "list":
 		fs := flag.NewFlagSet("list", flag.ExitOnError)
 		root := fs.String("root", "", "Путь к каталогу данных (по умолчанию ~/.noteline)")
-		tag := fs.String("tag", "", "Фильтр по тегу (точное совпадение)")
+		tag := fs.String("tag", "", "Фильтр по тегу (входит в список тегов)")
 		contains := fs.String("contains", "", "Фильтр по вхождению подстроки в заголовок/текст")
 		limit := fs.Int("limit", 0, "Ограничить количество результатов")
 		asJSON := fs.Bool("json", false, "Вывести список в JSON")
 		_ = fs.Parse(args)
+
 		if err := cli.CmdList(*root, *tag, *contains, *limit, *asJSON); err != nil {
-			fmt.Fprintln(os.Stderr, "list:", err)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", i18n.T("cmd.list"), err)
 			os.Exit(1)
 		}
 
@@ -200,6 +184,7 @@ func main() {
 		limit := fs.Int("limit", 0, "Ограничить количество результатов")
 		asJSON := fs.Bool("json", false, "Вывести список в JSON")
 		_ = fs.Parse(args)
+
 		if err := cli.CmdList(*root, *tag, *contains, *limit, *asJSON); err != nil {
 			fmt.Fprintln(os.Stderr, "search:", err)
 			os.Exit(1)
@@ -263,9 +248,9 @@ func main() {
 		fmt.Println(docs.ManPageRU)
 
 	default:
-		fmt.Fprintf(os.Stderr, "неизвестная команда: %s\n\n", cmd)
+		// сообщение об ошибке через i18n
+		fmt.Fprintf(os.Stderr, i18n.T("main.unknown_cmd"), cmd, helpText)
 		fmt.Println(helpText)
 		os.Exit(2)
 	}
-
 }
