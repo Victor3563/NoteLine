@@ -82,8 +82,7 @@ Completion:
     noteline completion zsh  > ~/.zsh/completions/_noteline
 
   fish:
-    noteline completion fish > ~/.config/fish/completions/noteline.fish
-`
+    noteline completion fish > ~/.config/fish/completions/noteline.fish`
 
 // ManPageRU — man-страница в формате roff (раздел 1, RU).
 const ManPageRU = `.TH NOTELINE 1 "2025-10-22" "noteline" "Пользовательские команды"
@@ -211,8 +210,7 @@ noteline \- консольный блокнот с сегментированн�
 .fi
 
 .SH АВТОРЫ
-Проектная работа студентов ПМИ ВШЭ.
-`
+Проектная работа студентов ПМИ ВШЭ.`
 
 // Скрипт автодополнения для bash.
 const BashCompletion = `# bash completion for noteline

@@ -1,1 +1,7 @@
 /noteline
+bench
+bench.csv
+regtest
+
+release/
+zips/
