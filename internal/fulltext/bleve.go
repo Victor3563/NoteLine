@@ -18,8 +18,6 @@ var (
 	searchCache *lru.LRU
 )
 
-// Init открывает (или создаёт) Bleve индекс в root (путь: <root>/index.bleve).
-// Вызывается из store.Open(root).
 func Init(root string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -27,14 +25,14 @@ func Init(root string) error {
 		return nil
 	}
 	path := filepath.Join(root, "index.bleve")
-	// Try open
+
 	i, err := bleve.Open(path)
 	if err == nil {
 		idx = i
 		searchCache = lru.New(1024)
 		return nil
 	}
-	// create new
+
 	mapping := bleve.NewIndexMapping()
 	i, err = bleve.New(path, mapping)
 	if err != nil {
@@ -45,7 +43,6 @@ func Init(root string) error {
 	return nil
 }
 
-// Close closes index (best-effort).
 func Close() error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -60,15 +57,13 @@ func Close() error {
 	return err
 }
 
-// IndexNote индексирует заметку (title, text, tags).
-// Best-effort: возвращает ошибку чтобы caller мог логировать.
 func IndexNote(n *model.Note) error {
 	mu.Lock()
 	defer mu.Unlock()
 	if idx == nil {
 		return fmt.Errorf("fulltext: index not initialized")
 	}
-	// document we index: fields must be exported
+
 	doc := struct {
 		Title string
 		Text  string
@@ -89,8 +84,6 @@ func IndexNote(n *model.Note) error {
 
 }
 
-// Search returns note IDs matching query (size = max hits).
-// The query uses Bleve query-string syntax (simple and powerful).
 func Search(q string, size int) ([]string, error) {
 	mu.Lock()
 	defer mu.Unlock()

@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Note описывает одну заметку.
 type Note struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
@@ -19,8 +18,6 @@ type Note struct {
 	Deleted   bool      `json:"deleted"`
 }
 
-// NewNote создаёт новую заметку с устойчивым ID.
-// ID = sha1(timestamp_ns | random_8 | len(title) | len(text))
 func NewNote(title, text string, tags []string) *Note {
 	now := time.Now().UTC()
 	var rnd [8]byte

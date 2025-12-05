@@ -5,8 +5,6 @@ import (
 	"sync"
 )
 
-// Simple thread-safe LRU cache for string keys and interface{} values.
-// Minimal, no generics to keep Go1.x compatibility.
 type entry struct {
 	key   string
 	value any

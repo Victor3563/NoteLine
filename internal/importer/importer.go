@@ -18,7 +18,7 @@ import (
 
 type FileResult struct {
 	Path   string `json:"path"`
-	Action string `json:"action"` // created, updated, skipped, error
+	Action string `json:"action"`
 	Error  string `json:"error,omitempty"`
 }
 
@@ -34,17 +34,16 @@ type Report struct {
 	Results    []FileResult `json:"results,omitempty"`
 }
 
-// информация о сопоставлении внешнего источника и заметки
 type sourceInfo struct {
 	NoteID      string `json:"note_id"`
-	Path        string `json:"path"`          // относительный путь
-	ContentHash string `json:"content_hash"`  // sha1(title+tags+body)
-	ModTimeUnix int64  `json:"mod_time_unix"` // время изменения файла
+	Path        string `json:"path"`
+	ContentHash string `json:"content_hash"`
+	ModTimeUnix int64  `json:"mod_time_unix"`
 }
 
 type importIndex struct {
 	Version int                   `json:"version"`
-	Sources map[string]sourceInfo `json:"sources"` // key -> info
+	Sources map[string]sourceInfo `json:"sources"`
 }
 
 func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
@@ -52,7 +51,6 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 		return nil, fmt.Errorf("пустой каталог импорта")
 	}
 
-	// приведение расширений к нормальному виду
 	extSet := make(map[string]bool)
 	for _, e := range exts {
 		e = strings.TrimSpace(strings.ToLower(e))
@@ -64,7 +62,7 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 		}
 		extSet[e] = true
 	}
-	// если не заданы — используем разумный дефолт
+
 	if len(extSet) == 0 {
 		extSet[".md"] = true
 		extSet[".markdown"] = true
@@ -102,7 +100,7 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 		}
 		name := d.Name()
 		if strings.HasPrefix(name, ".") {
-			return nil // пропускаем скрытые файлы
+			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(name))
 		if !extSet[ext] {
@@ -143,20 +141,18 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 		sourceKey := sourceKeyFor(meta, rel)
 		rep.Parsed++
 
-		// хэш содержимого для детекта изменений
 		contentHash := hashNoteContent(note)
 
-		// старая запись (если уже импортировали)
 		entry, existed := idx.Sources[sourceKey]
 
 		if existed && entry.ContentHash == contentHash {
-			// содержимое не изменилось — пропускаем
+
 			rep.Skipped++
 			rep.Results = append(rep.Results, FileResult{
 				Path:   rel,
 				Action: "skipped",
 			})
-			// можно обновить путь/mtime только в индексе
+
 			if !dryRun {
 				entry.Path = rel
 				entry.ModTimeUnix = info.ModTime().UTC().Unix()
@@ -168,7 +164,7 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 		now := time.Now().UTC()
 
 		if existed {
-			// обновление существующей заметки
+
 			old, err := s.GetByID(entry.NoteID)
 			if err != nil && !errors.Is(err, store.ErrNotFound) {
 				rep.Errors++
@@ -182,7 +178,7 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 
 			if old != nil {
 				note.ID = old.ID
-				// сохраняем оригинальное CreatedAt (из заметки или front matter)
+
 				if note.CreatedAt.IsZero() {
 					note.CreatedAt = old.CreatedAt
 				}
@@ -220,7 +216,6 @@ func ImportDir(root, dir string, exts []string, dryRun bool) (*Report, error) {
 			return nil
 		}
 
-		// новая заметка
 		tmp := model.NewNote(note.Title, note.Text, note.Tags)
 		if note.ID == "" {
 			note.ID = tmp.ID
@@ -285,7 +280,7 @@ func loadIndex(root string) (*importIndex, error) {
 	}
 	var idx importIndex
 	if err := json.Unmarshal(b, &idx); err != nil {
-		// если файл битый — начинаем с нуля
+
 		return &importIndex{
 			Version: 1,
 			Sources: make(map[string]sourceInfo),
@@ -306,13 +301,6 @@ func saveIndex(root string, idx *importIndex) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
-// splitFrontMatter отделяет front matter в формате:
-//
-// ---
-// key: value
-// tags: a, b, c
-// ---
-// тело markdown...
 func splitFrontMatter(content string) (map[string]string, string) {
 	lines := strings.Split(content, "\n")
 	if len(lines) == 0 {
@@ -320,7 +308,7 @@ func splitFrontMatter(content string) (map[string]string, string) {
 	}
 
 	if strings.TrimSpace(lines[0]) != "---" {
-		// нет front matter
+
 		return map[string]string{}, content
 	}
 
@@ -332,7 +320,7 @@ func splitFrontMatter(content string) (map[string]string, string) {
 		}
 	}
 	if end == -1 {
-		// нет закрывающего ---
+
 		return map[string]string{}, content
 	}
 
@@ -388,9 +376,8 @@ func buildNoteFromMarkdown(meta map[string]string, body, relpath string, info fs
 		updated = created
 	}
 
-	// sourceKey будет собран отдельно, здесь только Note
 	return &model.Note{
-		// ID заполним позже
+
 		Title:     title,
 		Text:      body,
 		Tags:      tags,
@@ -400,10 +387,6 @@ func buildNoteFromMarkdown(meta map[string]string, body, relpath string, info fs
 	}
 }
 
-// sourceKey строится как:
-//
-//	если есть meta["id"] -> "id:<значение>"
-//	иначе                -> "path:<relpath>"
 func sourceKeyFor(meta map[string]string, relpath string) string {
 	if id := strings.TrimSpace(meta["id"]); id != "" {
 		return "id:" + id
@@ -421,7 +404,7 @@ func parseTags(raw string) []string {
 	if raw == "" {
 		return nil
 	}
-	// убираем возможные скобки [a, b]
+
 	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
 		raw = strings.TrimSpace(raw[1 : len(raw)-1])
 	}

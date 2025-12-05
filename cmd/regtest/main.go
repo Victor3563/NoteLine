@@ -1,12 +1,5 @@
 package main
 
-// Minimal regtest:
-// - create isolated temporary store
-// - seed 20 deterministic notes (IDs n0001..n0020)
-// - run 20 exact checks (GetByID) and 5 contains checks (List with substring token)
-// - print PASS/FAIL and summary
-// - remove temp store at exit
-
 import (
 	"fmt"
 	"os"
@@ -19,14 +12,14 @@ import (
 )
 
 func seedNotes(s *store.Store) ([]string, map[string]string, error) {
-	// tokens used in a round-robin way so contains-queries are predictable
+
 	tokens := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
 	now := time.Now().UTC()
 	ids := make([]string, 0, 20)
 	tokenForID := make(map[string]string, 20)
 
 	for i := 1; i <= 20; i++ {
-		id := fmt.Sprintf("n%04d", i) // deterministic ID
+		id := fmt.Sprintf("n%04d", i)
 		tok := tokens[(i-1)%len(tokens)]
 		title := fmt.Sprintf("Note %d", i)
 		text := fmt.Sprintf("This is test note %d. token=%s. boilerplate text.", i, tok)
@@ -67,21 +60,20 @@ func equalSets(a, b []string) bool {
 
 func main() {
 	_ = i18n.InitFromEnv()
-	// create visible temp dir in cwd so user can inspect if needed before it's removed
+
 	home, _ := os.UserHomeDir()
 	tmpRoot, err := os.MkdirTemp(home, "data_regtest-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("regtest.err_tempdir", err))
 		os.Exit(2)
 	}
-	// ensure cleanup
+
 	defer func() {
 		_ = os.RemoveAll(tmpRoot)
 	}()
 
 	fmt.Printf(i18n.T("regtest.using_store")+"\n", tmpRoot)
 
-	// open store
 	s, err := store.Open(tmpRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("regtest.err_open_store", err))
@@ -89,7 +81,6 @@ func main() {
 	}
 	defer s.Close()
 
-	// seed 20 deterministic notes
 	ids, tokenForID, err := seedNotes(s)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("regtest.err_seed", err))
@@ -98,7 +89,6 @@ func main() {
 
 	fmt.Printf(i18n.T("regtest.seeded")+"\n", len(ids))
 
-	// --- 20 exact checks (GetByID) ---
 	fmt.Println(i18n.T("regtest.exact_checks_title"))
 
 	total := 0
@@ -115,23 +105,22 @@ func main() {
 			continue
 		}
 		passed++
-		// fmt.Printf("PASS exact %s\n", id)
+
 		fmt.Printf(i18n.T("regtest.pass_exact")+"\n", id)
 
 	}
 
-	// --- 5 contains checks ---
 	fmt.Println(i18n.T("regtest.contains_checks_title"))
-	// build expected sets for tokens
+
 	tokenBuckets := map[string][]string{}
 	for id, tok := range tokenForID {
 		tokenBuckets[tok] = append(tokenBuckets[tok], id)
 	}
-	tokens := []string{"alpha", "beta", "gamma", "delta", "epsilon"} // exactly 5
+	tokens := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
 	for _, tok := range tokens {
 		total++
 		exp := tokenBuckets[tok]
-		// run List
+
 		list, err := s.List(store.Filter{Contains: tok, Limit: 100})
 		if err != nil {
 			fmt.Printf(i18n.T("regtest.fail_contains_query_error")+"\n", tok, err)
@@ -141,7 +130,7 @@ func main() {
 		for _, n := range list {
 			got = append(got, n.ID)
 		}
-		// compare sets (order irrelevant)
+
 		if equalSets(exp, got) {
 			passed++
 			fmt.Printf(i18n.T("regtest.pass_contains")+"\n", tok, len(got))

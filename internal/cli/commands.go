@@ -20,7 +20,7 @@ func defaultRoot(root string) string {
 		return root
 	}
 	home, _ := os.UserHomeDir()
-	// важно: тут должен быть тот же дефолт, что и в store.Ensure
+
 	return filepath.Join(home, ".noteline")
 }
 
@@ -114,7 +114,6 @@ func CmdList(root, tag, contains string, limit int, asJSON bool) error {
 		}
 		fmt.Printf(i18n.T("cmd.created_indented")+"\n", n.CreatedAt.Format("2006-01-02 15:04:05"))
 
-		// подсветка совпадений — только при текстовом выводе (не JSON) и если задан contains
 		if strings.TrimSpace(contains) != "" && !asJSON {
 			sn := highlightSnippet(&n, contains)
 			if sn != "" {
@@ -183,7 +182,6 @@ func CmdDelete(root, id string) error {
 func CmdImport(root, dir, extList string, dryRun, verbose bool) error {
 	root = defaultRoot(root)
 
-	// проверка: существует ли каталог импорта
 	dir = filepath.Clean(dir)
 	if info, err := os.Stat(dir); err != nil {
 		if os.IsNotExist(err) {
@@ -229,7 +227,6 @@ func CmdImport(root, dir, extList string, dryRun, verbose bool) error {
 	return nil
 }
 
-// parseExtList превращает строку "md,markdown,txt" в []string{".md",".markdown",".txt"}.
 func parseExtList(list string) []string {
 	list = strings.TrimSpace(list)
 	if list == "" {
@@ -250,12 +247,8 @@ func parseExtList(list string) []string {
 	return exts
 }
 
-// -------- подсветка совпадений для list --------
-
 var tokenRe = regexp.MustCompile(`[\p{L}\p{N}]+`)
 
-// extractTokens извлекает "токены" (слова/числа) из поискового запроса.
-// Убирает операторы и спецсимволы; возвращает список в нижнем регистре.
 func extractTokens(query string) []string {
 	if strings.TrimSpace(query) == "" {
 		return nil
@@ -271,16 +264,12 @@ func extractTokens(query string) []string {
 	return out
 }
 
-// highlightSnippet возвращает короткий фрагмент текста из title+text
-// с подсветкой первого вхождения любого токена (ANSI цвет).
-// Если совпадений нет, возвращает пустую строку.
 func highlightSnippet(n *model.Note, query string) string {
 	toks := extractTokens(query)
 	if len(toks) == 0 {
 		return ""
 	}
 
-	// соберём целевой текст: title + " — " + text (если есть)
 	var txt string
 	if strings.TrimSpace(n.Title) != "" {
 		if strings.TrimSpace(n.Text) != "" {
@@ -292,7 +281,6 @@ func highlightSnippet(n *model.Note, query string) string {
 		txt = n.Text
 	}
 
-	// подготовим regexp для поиска любого токена, case-insensitive
 	esc := make([]string, 0, len(toks))
 	for _, t := range toks {
 		esc = append(esc, regexp.QuoteMeta(t))
@@ -300,9 +288,8 @@ func highlightSnippet(n *model.Note, query string) string {
 	pattern := `(?i)(` + strings.Join(esc, `|`) + `)`
 	re := regexp.MustCompile(pattern)
 
-	// ищем первое вхождение
 	loc := re.FindStringIndex(txt)
-	// если не нашли в title/text, попробуем теги
+
 	if loc == nil {
 		tags := strings.Join(n.Tags, " ")
 		loc = re.FindStringIndex(tags)
@@ -312,7 +299,6 @@ func highlightSnippet(n *model.Note, query string) string {
 		txt = tags
 	}
 
-	// сформируем контекстный фрагмент (по 40 символов слева и справа)
 	left := 40
 	right := 40
 	start := loc[0] - left
@@ -325,9 +311,8 @@ func highlightSnippet(n *model.Note, query string) string {
 	}
 	snippet := txt[start:end]
 
-	// заменим все вхождения в snippet на ANSI-код
 	highlighted := re.ReplaceAllStringFunc(snippet, func(m string) string {
-		// \x1b[31;1m = красный жирный, \x1b[0m = сброс
+
 		return "\x1b[31;1m" + m + "\x1b[0m"
 	})
 

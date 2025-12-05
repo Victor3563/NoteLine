@@ -18,14 +18,9 @@ var (
 	loadedFrom string
 )
 
-// InitFromEnv ищет JSON с локалью.
-// Использует NOTELINE_I18N_DIR если задан, иначе последовательность:
-// ./internal/i18n/locals, ./internal/i18n, ./i18n/locals, ./i18n, $HOME/NoteLine/i18n/locals, $HOME/NoteLine/i18n
-// Логика локали: NOTELINE_LANG -> LANG -> "en". Если LANG == "C" || "POSIX" -> treat as "en".
 func InitFromEnv() error {
 	dirEnv := os.Getenv("NOTELINE_I18N_DIR")
 
-	// determine lang, normalize
 	lang := os.Getenv("NOTELINE_LANG")
 	if lang == "" {
 		lang = os.Getenv("LANG")
@@ -33,17 +28,15 @@ func InitFromEnv() error {
 	if lang == "" {
 		lang = "en"
 	}
-	// normalize locales like "en_US.UTF-8" -> "en_US"
+
 	lang = strings.SplitN(lang, ".", 2)[0]
 	lang = strings.SplitN(lang, "@", 2)[0]
 	lang = strings.TrimSpace(lang)
 
-	// treat "C" and "POSIX" as default "en"
 	if lang == "C" || lang == "POSIX" || lang == "" {
 		lang = "en"
 	}
 
-	// build candidate directories (prefer project-relative 'internal/i18n/locals')
 	candidates := make([]string, 0, 8)
 	if dirEnv != "" {
 		candidates = append(candidates, dirEnv, filepath.Join(dirEnv, "locals"))
@@ -51,7 +44,6 @@ func InitFromEnv() error {
 		wd, _ := os.Getwd()
 		home, _ := os.UserHomeDir()
 
-		// preferred: relative to project root (where you run the binary)
 		if wd != "" {
 			candidates = append(candidates,
 				filepath.Join(wd, "internal", "i18n", "locals"),
@@ -60,7 +52,7 @@ func InitFromEnv() error {
 				filepath.Join(wd, "i18n"),
 			)
 		}
-		// fallback: home/NoteLine
+
 		if home != "" {
 			candidates = append(candidates,
 				filepath.Join(home, "NoteLine", "i18n", "locals"),
@@ -69,22 +61,20 @@ func InitFromEnv() error {
 		}
 	}
 
-	// dedupe
 	candidates = uniqueStrings(candidates)
 
-	// try exact lang and short lang per each candidate dir
 	var errs []error
 	for _, d := range candidates {
 		if d == "" {
 			continue
 		}
-		// try exact (e.g. en_US)
+
 		if err := tryLoad(filepath.Join(d, lang+".json"), lang); err == nil {
 			return nil
 		} else {
 			errs = append(errs, err)
 		}
-		// try short code (e.g. "en")
+
 		if len(lang) > 2 {
 			short := lang[:2]
 			if err := tryLoad(filepath.Join(d, short+".json"), short); err == nil {
@@ -95,7 +85,6 @@ func InitFromEnv() error {
 		}
 	}
 
-	// as last resort, try "en" files in candidates
 	for _, d := range candidates {
 		if d == "" {
 			continue
@@ -107,9 +96,8 @@ func InitFromEnv() error {
 		}
 	}
 
-	// nothing loaded
 	lastErr = fmt.Errorf("i18n: failed to load locale %q; tried %d paths; lastErr: %v", lang, len(lastTried), errsToString(errs))
-	// print short diagnostic so user understands and can fix path
+
 	fmt.Fprintf(os.Stderr, "i18n: load failed: %v\n", lastErr)
 	fmt.Fprintf(os.Stderr, "i18n: set NOTELINE_I18N_DIR or put locale json into one of:\n")
 	for _, p := range candidates {
@@ -118,12 +106,11 @@ func InitFromEnv() error {
 	return lastErr
 }
 
-// tryLoad attempts to load file fullPath which should be <dir>/<loc>.json
 func tryLoad(fullPath, loc string) error {
 	mu.Lock()
 	lastTried = append(lastTried, fullPath)
 	mu.Unlock()
-	// call LoadLocale which reads file and sets msgs
+
 	if err := LoadLocale(fullPath, loc); err != nil {
 		return err
 	}
@@ -134,7 +121,6 @@ func tryLoad(fullPath, loc string) error {
 	return nil
 }
 
-// LoadLocale loads file at fullPath and sets locale to loc.
 func LoadLocale(fullPath, loc string) error {
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -153,13 +139,11 @@ func LoadLocale(fullPath, loc string) error {
 	return nil
 }
 
-// T возвращает локализованную строку, форматируя через fmt.Sprintf.
-// Если msgs не загружены — возвращает ключ (и не пытается Sprintf ключа).
 func T(key string, args ...interface{}) string {
 	mu.RLock()
 	defer mu.RUnlock()
 	if msgs == nil {
-		// msgs не загружены: возвращаем ключ или ключ + args для диагностики
+
 		if len(args) == 0 {
 			return key
 		}
@@ -178,14 +162,12 @@ func T(key string, args ...interface{}) string {
 	return fmt.Sprintf(val, args...)
 }
 
-// Locale возвращает текущую локаль (для отладки)
 func Locale() string {
 	mu.RLock()
 	defer mu.RUnlock()
 	return locale
 }
 
-// LastLoadInfo возвращает from, tried paths and lastErr (для отладки)
 func LastLoadInfo() (loadedFromPath string, triedPaths []string, err error) {
 	mu.RLock()
 	defer mu.RUnlock()

@@ -8,14 +8,17 @@ import (
 	"strings"
 
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/cli"
+	"github.com/Victor3563/NoteLine/cli-notebook/internal/crash"
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/docs"
 	"github.com/Victor3563/NoteLine/cli-notebook/internal/i18n"
 )
 
+var version = "dev"
+
 func main() {
+	defer crash.ReportIfPanic(version)
 	_ = i18n.InitFromEnv()
 
-	// help_text берём из i18n (а не из константы)
 	helpText := i18n.T("help_text")
 
 	if len(os.Args) < 2 {
@@ -50,7 +53,7 @@ func main() {
 
 		body := strings.TrimSpace(*text)
 		if body == "" {
-			// читаем из stdin (pipe или ручной ввод с завершением Ctrl+D)
+
 			data, err := io.ReadAll(os.Stdin)
 			if err == nil {
 				body = strings.TrimSpace(string(data))
@@ -200,7 +203,6 @@ func main() {
 		_ = fs.Parse(args)
 
 		if strings.TrimSpace(*dir) == "" {
-			// позволяем передать каталог позиционным аргументом
 			rest := fs.Args()
 			if len(rest) > 0 {
 				*dir = rest[0]
@@ -248,7 +250,6 @@ func main() {
 		fmt.Println(docs.ManPageRU)
 
 	default:
-		// сообщение об ошибке через i18n
 		fmt.Fprintf(os.Stderr, i18n.T("main.unknown_cmd"), cmd, helpText)
 		fmt.Println(helpText)
 		os.Exit(2)
